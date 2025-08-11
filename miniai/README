@@ -1,0 +1,501 @@
+# MiniAI Framework
+
+A lightweight, benchmark-conscious agent orchestration framework for task planning → execution → memory loops.
+
+## Overview
+
+MiniAI is designed for running short multi-step chains with deterministic, auditable task creation and prioritization. It emphasizes high throughput through asynchronous operations, batching, and caching while maintaining robustness through comprehensive error handling and observability.
+
+## Features
+
+- **Async-first architecture** - All I/O operations are asynchronous for high throughput
+- **Structured JSON outputs** - All LLM interactions use strict schema validation with Pydantic
+- **Hybrid memory system** - Combines short-term (deque) and long-term (vector + SQL) memory
+- **Pluggable backends** - Support for OpenAI/Anthropic LLMs and FAISS/in-memory vector stores  
+- **Robust error handling** - Retries, exponential backoff, circuit breakers, timeout handling
+- **Comprehensive observability** - Structured logging, metrics, and request tracing
+- **Loop detection** - Prevents infinite task generation cycles
+- **Task deduplication** - Hash-based and embedding similarity deduplication
+- **Benchmarking harness** - Built-in performance measurement and testing
+
+## Quick Start
+
+### Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+### Basic Usage
+
+```python
+import asyncio
+from miniai import Config, AgentController
+
+async def main():
+    # Initialize with environment variables
+    config = Config.from_env()
+    
+    # Create and initialize controller
+    controller = AgentController(config)
+    await controller.initialize()
+    
+    try:
+        # Add initial task
+        controller.add_initial_task("Research market opportunities for AI agents")
+        
+        # Run agent
+        results = await controller.run(
+            objective="Launch a successful AI agent product",
+            max_iterations=10
+        )
+        
+        print(f"Completed {results['tasks_completed']} tasks in {results['total_time']:.2f}s")
+        
+    finally:
+        await controller.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### CLI Usage
+
+```bash
+# Basic run
+python main.py run "Launch an AI product" "Research the market"
+
+# With custom config
+python main.py run "Build a website" "Define requirements" --config config.json --max-iter 15
+
+# Save results
+python main.py run "Write a report" "Gather information" --output results.json
+
+# Run benchmarks
+python main.py benchmark scenarios.json --output benchmark_results.json
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+export OPENAI_API_KEY="your-openai-key"
+# OR
+export ANTHROPIC_API_KEY="your-anthropic-key"
+```
+
+### Config File Example
+
+```json
+{
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.1,
+    "max_tokens": 2048
+  },
+  "vectorstore": {
+    "provider": "faiss",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "similarity_threshold": 0.92
+  },
+  "memory": {
+    "short_term_size": 100,
+    "retrieval_k": 5,
+    "hybrid_alpha": 0.7
+  },
+  "max_iterations": 20,
+  "log_level": "INFO"
+}
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    AgentController                      │
+│  ┌─────────────────────────────────────────────────────┐│
+│  │              Main Control Loop                      ││
+│  │  1. Pop highest priority task                       ││
+│  │  2. Execute task with context                       ││
+│  │  3. Store result in memory                          ││
+│  │  4. Generate new tasks                              ││
+│  │  5. Prioritize task queue                           ││
+│  └─────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│TaskCreation  │    │TaskPriority  │    │Execution     │
+│Chain         │    │Chain         │    │Chain         │
+│              │    │              │    │              │
+│LLM→JSON      │    │LLM→JSON      │    │LLM→JSON      │
+└──────────────┘    └──────────────┘    └──────────────┘
+        │                   │                   │
+        └───────────────────┼───────────────────┘
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │   Memory     │
+                    │              │
+                    │ ShortTerm    │
+                    │ (deque)      │
+                    │              │
+                    │ LongTerm     │
+                    │ (Vector+SQL) │
+                    └──────────────┘
+```
+
+## Data Flow
+
+1. **Task Retrieval**: Controller pops highest-priority task from queue
+2. **Context Retrieval**: Hybrid memory retrieval (BM25 + semantic) provides relevant context  
+3. **Task Execution**: ExecutionChain calls LLM with task and context, returns structured result
+4. **Memory Storage**: Result stored in both short-term and long-term memory with indexing
+5. **Task Generation**: TaskCreationChain analyzes result and generates new tasks
+6. **Task Prioritization**: TaskPrioritizationChain scores and ranks all pending tasks
+7. **Loop Continue**: Process repeats until queue empty or max iterations reached
+
+## Memory System
+
+### Short-Term Memory
+- Rolling buffer (deque) of recent execution results
+- Fast keyword search for immediate context
+- Configurable size (default: 100 entries)
+
+### Long-Term Memory  
+- Vector store (FAISS) with semantic search
+- SQLite metadata store with full-text search
+- Hybrid retrieval combining keyword + semantic similarity
+- Persistent across runs
+
+### Hybrid Retrieval
+```python
+# Combines keyword and semantic search
+context = await memory.retrieve_context(
+    query="user authentication security",
+    k=5  # Retrieve top 5 relevant entries
+)
+```
+
+## Chains
+
+### TaskCreationChain
+Analyzes execution results and generates new tasks:
+
+**Input**: Objective, completed task result, incomplete tasks
+**Output**: JSON array of new tasks with metadata
+**Prompt Strategy**: Few-shot examples with strict JSON schema
+
+### TaskPrioritizationChain  
+Scores and ranks tasks by importance and urgency:
+
+**Input**: Task list, objective, next task ID
+**Output**: JSON array of tasks with priority scores
+**Scoring**: 0.0-1.0 scale considering dependencies and impact
+
+### ExecutionChain
+Executes individual tasks with retrieved context:
+
+**Input**: Objective, relevant context entries, task to execute
+**Output**: Structured execution result with facts and next steps
+**Features**: Actionable steps extraction, artifact URL collection
+
+## Error Handling
+
+### LLM Call Failures
+- 3 retries with exponential backoff (0.5s → 1s → 2s)
+- Circuit breaker pattern for persistent failures
+- Graceful degradation with partial results
+
+### JSON Parsing Errors
+- Multi-strategy JSON extraction (direct, code blocks, regex)
+- Correction prompts for malformed responses
+- Fallback to error status with diagnostic info
+
+### Vector Store Failures
+- Automatic fallback to SQLite FTS for retrieval
+- Graceful handling of index corruption
+- Rebuilding capabilities for recovery
+
+### Infinite Loop Detection
+- Hash-based task history tracking (configurable window)
+- Threshold-based loop detection (default: 5 repetitions)
+- Automatic termination with detailed logging
+
+## Benchmarking
+
+### Built-in Metrics
+- **Latency**: Task execution time (median, p90, p99)
+- **Throughput**: Tasks completed per second
+- **Token Usage**: LLM consumption tracking and cost estimation
+- **Retrieval Quality**: Recall@k measurements
+- **Task Convergence**: Iterations to completion
+- **Duplicate Rate**: Percentage of generated duplicates filtered
+
+### Benchmark Scenarios
+
+Create `scenarios.json`:
+```json
+[
+  {
+    "name": "Simple Planning Task",
+    "objective": "Plan a team meeting",
+    "initial_task": "Determine meeting objectives",
+    "max_iterations": 5,
+    "config": {
+      "llm": {"model": "gpt-4o-mini"},
+      "max_iterations": 5
+    }
+  },
+  {
+    "name": "Complex Research Task", 
+    "objective": "Research AI market trends",
+    "initial_task": "Identify key market segments",
+    "max_iterations": 10,
+    "config": {
+      "llm": {"model": "gpt-4o"},
+      "memory": {"retrieval_k": 10}
+    }
+  }
+]
+```
+
+Run benchmarks:
+```bash
+python main.py benchmark scenarios.json --output results.json
+```
+
+### Performance Targets
+- **Async + Batching**: 30-50% reduction in wall-clock time
+- **Caching**: 80% reduction in repeated LLM calls
+- **Hybrid Retrieval**: 7-15% improvement in recall@10
+
+## Testing
+
+### Run All Tests
+```bash
+pytest tests/ -v
+```
+
+### Run Specific Test Categories
+```bash
+# Unit tests only
+pytest tests/test_models.py tests/test_utils.py -v
+
+# Integration tests
+pytest tests/test_integration.py -v
+
+# With coverage
+pytest tests/ --cov=miniai --cov-report=html
+```
+
+### Test Categories
+- **Unit Tests**: Models, utilities, individual components
+- **Integration Tests**: End-to-end workflows with mocked LLMs
+- **Benchmark Tests**: Performance measurement scenarios
+- **Error Handling**: Retry logic, parsing failures, timeouts
+
+## Observability
+
+### Structured Logging
+All events logged as JSON with consistent fields:
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "level": "INFO",
+  "logger": "miniai.controller",
+  "message": "Task execution completed",
+  "trace_id": "abc123",
+  "task_name": "Research competitors",
+  "duration": 2.45,
+  "tokens_used": 1250
+}
+```
+
+### Metrics Collection
+```python
+from miniai.observability import get_metrics
+
+metrics = get_metrics()
+summary = metrics.get_summary()
+
+print(f"Tasks executed: {summary['counters']['tasks.executed']}")
+print(f"Avg execution time: {summary['histograms']['tasks.execution_time']['avg']:.2f}s")
+```
+
+### Request Tracing
+Each operation gets a unique trace_id for correlation across logs:
+```python
+with trace_operation("custom_operation", {"param": "value"}):
+    # Your code here - all logs will include trace_id
+    pass
+```
+
+## Security & Cost Management
+
+### Security
+- API keys never logged (automatic redaction)
+- Input sanitization for all user-provided data
+- Schema validation prevents injection attacks
+- Configurable timeouts prevent resource exhaustion
+
+### Cost Control
+```python
+# Built-in cost estimation
+config.llm.max_tokens = 2048  # Limit response length
+config.max_iterations = 10    # Limit total LLM calls
+
+# Token usage tracking
+result = await controller.run(objective)
+total_tokens = sum(task.tokens_used for task in result['completed_tasks'])
+estimated_cost = total_tokens * 0.00002  # $0.02/1K tokens for GPT-4o-mini
+```
+
+## Advanced Usage
+
+### Custom Vector Store
+```python
+from miniai.vectorstore import VectorStore
+
+class CustomVectorStore(VectorStore):
+    async def add_entries(self, entries):
+        # Your implementation
+        pass
+    
+    async def query(self, query_text, k=5):
+        # Your implementation
+        return RetrievalResult(entries=[], scores=[], total_found=0)
+
+# Use in config
+config.vectorstore.provider = "custom"
+```
+
+### Custom Metrics Collector
+```python
+from miniai.observability import MetricsCollector, init_metrics
+
+class PrometheusMetrics(MetricsCollector):
+    def increment(self, metric, tags=None):
+        # Send to Prometheus
+        pass
+
+init_metrics(PrometheusMetrics())
+```
+
+### Batch Processing
+```python
+# Process multiple objectives
+objectives = [
+    "Plan marketing campaign",
+    "Design product roadmap", 
+    "Analyze user feedback"
+]
+
+results = []
+for objective in objectives:
+    controller.add_initial_task(f"Start work on: {objective}")
+    result = await controller.run(objective, max_iterations=5)
+    results.append(result)
+```
+
+## Development Checklist
+
+Use this checklist to verify the MiniAI implementation:
+
+- [ ] **Models**: All Pydantic models validate correctly with test cases
+- [ ] **Configuration**: Environment variables and config files load properly  
+- [ ] **LLM Client**: Async client handles retries, timeouts, and JSON parsing
+- [ ] **Vector Store**: Both FAISS and in-memory implementations work
+- [ ] **Memory System**: Short-term and long-term memory store/retrieve correctly
+- [ ] **Chains**: All three chains (creation, prioritization, execution) return valid JSON
+- [ ] **Controller**: Main loop executes tasks and manages queue properly
+- [ ] **Error Handling**: Retries, parsing errors, and timeouts handled gracefully
+- [ ] **Observability**: Structured logs and metrics collection functional
+- [ ] **Testing**: All unit and integration tests pass
+- [ ] **CLI**: Command-line interface works for basic runs and benchmarks
+
+## Troubleshooting
+
+### Common Issues
+
+**"Failed to parse JSON from LLM response"**
+- Check LLM model supports structured output
+- Verify prompt templates include clear JSON examples
+- Enable debug logging to see raw responses
+
+**"Vector store initialization failed"**  
+- Ensure data directory exists and is writable
+- Check disk space for FAISS index files
+- Verify sentence-transformers model downloads correctly
+
+**"Task queue not progressing"**
+- Check for infinite loops in task generation
+- Verify task prioritization assigns different scores
+- Enable trace logging to debug task flow
+
+**"High token usage/costs"**
+- Reduce `max_tokens` in config
+- Limit `max_iterations` for testing
+- Use smaller models like `gpt-4o-mini`
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python main.py run "test objective" "test task"
+
+# Trace specific operations
+import structlog
+logger = structlog.get_logger()
+logger.debug("Custom debug message", extra={"custom_field": "value"})
+```
+
+### Performance Optimization
+```python
+# Optimize for speed
+config.llm.temperature = 0.0      # Faster, more deterministic
+config.memory.retrieval_k = 3     # Fewer context entries
+config.vectorstore.similarity_threshold = 0.95  # Stricter deduplication
+
+# Optimize for quality  
+config.llm.temperature = 0.3      # More creative responses
+config.memory.retrieval_k = 10    # More context
+config.vectorstore.similarity_threshold = 0.85   # More permissive
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make changes and add tests
+4. Run test suite: `pytest tests/ -v`
+5. Submit pull request
+
+### Development Setup
+```bash
+git clone https://github.com/your-org/miniai.git
+cd miniai
+pip install -e .
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Changelog
+
+### v0.1.0 (Initial Release)
+- Core agent orchestration framework
+- Async LLM client with retry logic  
+- Hybrid memory system (short-term + long-term)
+- FAISS and in-memory vector store implementations
+- Task creation, prioritization, and execution chains
+- Comprehensive error handling and observability
+- CLI interface and benchmarking harness
+- Full test suite with integration tests
