@@ -1,0 +1,15 @@
+asyncio>=3.4.3
+aiohttp>=3.8.0
+numpy>=1.24.0
+pandas>=2.0.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+chromadb>=0.4.0
+openai>=1.0.0
+anthropic>=0.3.0
+redis>=4.5.0
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+uvloop>=0.17.0
+structlog>=23.0.0
+backoff>=2.2.0
