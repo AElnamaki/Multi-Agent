@@ -1,4 +1,5 @@
 ## MiniAI Multi-Agent System README
+
 Table of Contents
 
 Overview
@@ -32,7 +33,7 @@ Anthropic API key (optional)
 
 ## Installation
 
-Clone the repository: git clone https://github.com/your-repo/miniai.git
+Clone the repository: git clone https://github.com/AElnamaki/miniai.git
 Create a virtual environment: python -m venv venv
 Activate the virtual environment: source venv/bin/activate
 Install dependencies: pip install -r requirements.txt
